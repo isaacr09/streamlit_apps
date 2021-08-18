@@ -1,3 +1,4 @@
+from alpaca_trade_api.rest import Orders
 import pandas as pd
 from tabulate import tabulate
 import pytz
@@ -7,27 +8,38 @@ import streamlit as st
 import os
 import alpaca_trade_api as tradeapi
 
-# pass the API and prevDays (0 for today, 1 since yesterday...)
-def report2(api, prevDays):
-    #
-    # get all closed orders and import them into a dataframe
-    #
-    orderTotal = 500
-    today = dt.date.today() - dt.timedelta(days=prevDays)
-    today = dt.datetime.combine(today, dt.datetime.min.time())
-    today = today.strftime("%Y-%m-%dT%H:%M:%SZ")
-    #print(today)
-    orders = api.list_orders(status='all', limit=orderTotal, after=today)
-    if not orders:
-        return
-    dfOrders = pd.DataFrame()
-    for o in orders:
-        # convert dot notation to dict
-        d = vars(o)
-        # import dict into dataframe
-        df = pd.DataFrame.from_dict(d, orient='index')
-        # append to dataframe
-        dfOrders = dfOrders.append(df, ignore_index=True)
+def get_orders(api):
+    count = 0
+    search = True
+
+    while search:
+
+        if count < 1:
+            data = api.get_activities()
+            # Turn the activities list into a dataframe for easier manipulation
+            data = pd.DataFrame([activity._raw for activity in data])
+            # get the last order id for pagination
+            split_id = data.id.iloc[-1]
+            
+            trades = data
+        
+        else:
+            data = api.get_activities(direction='desc', page_token=split_id)
+            data = pd.DataFrame([activity._raw for activity in data])
+
+            if data.empty:
+                search = False
+                
+            else:
+                split_id = data.id.iloc[-1]
+                trades = trades.append(data)
+                
+        count += 1
+        
+    trades = trades.reset_index(drop=True)
+    trades = trades.sort_index(ascending=False).reset_index(drop=True)
+    # filter to filled orders
+    trades = trades[trades.activity_type == 'FILL']
 
     # select filled orders with buy or sell
     dfSel = dfOrders
@@ -35,21 +47,26 @@ def report2(api, prevDays):
     dfSel = dfSel[['submitted_at', 'filled_at', 'symbol', 'filled_qty', 'side', 'type', 'filled_avg_price', 'status']].copy()
 
     # convert filled_at to date
-    dfSel['submitted_at'] = pd.to_datetime(dfSel['submitted_at'], format="%Y-%m-%d %H:%M:%S")
-    dfSel['filled_at']    = pd.to_datetime(dfSel['filled_at'], format="%Y-%m-%d %H:%M:%S")
+    # dfSel['submitted_at'] = pd.to_datetime(dfSel['submitted_at'], format="%Y-%m-%d %H:%M:%S")
+    # dfSel['filled_at']    = pd.to_datetime(dfSel['filled_at'], format="%Y-%m-%d %H:%M:%S")
+    dfSel['transaction_time'] = pd.to_datetime(dfSel['transaction_time'], format="%Y-%m-%d %H:%M:%S")
     # convert to our timezone
-    dfSel['submitted_at'] = dfSel['submitted_at'].dt.tz_convert('America/New_York')
-    dfSel['filled_at']    = dfSel['filled_at'].dt.tz_convert('America/New_York')
+    # dfSel['submitted_at'] = dfSel['submitted_at'].dt.tz_convert('America/Kansas_City')
+    # dfSel['filled_at']    = dfSel['filled_at'].dt.tz_convert('America/Kansas_City')
+    dfSel['transaction_time'] = dfSel['transaction_time'].dt.tz_convert('America/Kansas_City')
+
     # remove millis
-    dfSel['submitted_at'] = dfSel['submitted_at'].dt.strftime("%Y-%m-%d %H:%M:%S")
-    dfSel['filled_at']    = dfSel['filled_at'].dt.strftime("%Y-%m-%d %H:%M:%S")
+    # dfSel['submitted_at'] = dfSel['submitted_at'].dt.strftime("%Y-%m-%d %H:%M:%S")
+    # dfSel['filled_at']    = dfSel['filled_at'].dt.strftime("%Y-%m-%d %H:%M:%S")
+    dfSel['transaction_time'] = dfSel['transaction_time'].dt.tz_convert("%Y-%m-%d %H:%M:%S")
 
     # Sort: https://kanoki.org/2020/01/28/sort-pandas-dataframe-and-series/
     # need to sort in order to perform the proper calculations
     # sort based on the following sequence of types: market then limit, then stop_limit
-    dfSel['type'] = pd.Categorical(dfSel['type'], categories=["market", "limit", "stop_limit"])
+    # dfSel['type'] = pd.Categorical(dfSel['type'], categories=["market", "limit", "stop_limit"])
     # sort first based on symbol, then type as per the list above, then submitted date
-    dfSel.sort_values(by=['symbol', 'submitted_at', 'type'], inplace=True, ascending=True)
+    # dfSel.sort_values(by=['symbol', 'submitted_at', 'type'], inplace=True, ascending=True)
+    dfSel.sort_values(by=['symbol', 'transaction_time'], inplace=True, ascending=True)
 
     # reset index
     dfSel.reset_index(drop=True, inplace=True)
